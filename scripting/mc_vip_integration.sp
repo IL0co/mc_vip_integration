@@ -17,6 +17,14 @@ public Plugin myinfo =
 bool g_bPreviewMode[MAXPLAYERS+1];
 char g_cLastSeePluginUnique[MAXPLAYERS+1][MAX_UNIQUE_LENGTH];
 
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
+{	
+	__pl_vip_core_SetNTVOptional();
+	MarkNativeAsOptional("VIP_UnregisterMe");
+	
+	return APLRes_Success;
+}
+
 public void OnPluginEnd()
 {
     VIP_UnregisterMe();

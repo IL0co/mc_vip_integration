@@ -1,6 +1,7 @@
 #include <sourcemod>
 #include <mc_core>
 #include <vip_core>
+#include <clientprefs>
 
 #pragma newdecls required
 #pragma semicolon 1
@@ -16,32 +17,63 @@ public Plugin myinfo =
 
 bool g_bPreviewMode[MAXPLAYERS+1];
 char g_cLastSeePluginUnique[MAXPLAYERS+1][MAX_UNIQUE_LENGTH];
+StringMap g_mapCookies;
 
-public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
-{	
-	__pl_vip_core_SetNTVOptional();
-	MarkNativeAsOptional("VIP_UnregisterMe");
-	
-	return APLRes_Success;
-}
+#define CORE_TYPE "vip"
 
 public void OnPluginEnd()
 {
     VIP_UnregisterMe();
+	MC_UnRegisterMe();
 }
 
-public void MC_OnPluginUnRegistered(const char[] plugin_id, MC_PluginIndex plugin_index)
+public void MC_OnPluginUnRegistered(const char[] plugin_id)
 {
+	Cookie cookie;
+	if(g_mapCookies.GetValue(plugin_id, cookie) && cookie)
+	{
+		g_mapCookies.Remove(plugin_id);
+		delete cookie;
+	}
+		
     if(VIP_IsValidFeature(plugin_id))
         VIP_UnregisterFeature(plugin_id);
 }
 
 public void OnPluginStart()
 {
+	g_mapCookies = new StringMap();
 	LoadTranslations("mc_core.phrases");
 
     if(VIP_IsVIPLoaded())
         VIP_OnVIPLoaded();
+}
+
+public void MC_OnCoreLoaded()
+{
+	MC_RegisterIntegration(CORE_TYPE, CallBack_MC_OnIntegrationGetItem);
+}
+
+public bool CallBack_MC_OnIntegrationGetItem(int client, const char[] plugin_id, char[] buffer, int maxlen)
+{
+	Cookie cookie;
+	g_mapCookies.GetValue(plugin_id, cookie);
+	cookie.Get(client, buffer, maxlen);
+
+	if(buffer[0])
+		return true;
+
+	return false;
+}
+
+public void MC_OnPluginRegistered(const char[] plugin_id)
+{
+	char buff[MAX_UNIQUE_LENGTH];
+	FormatEx(buff, sizeof(buff), "VIP:%s", plugin_id);
+
+	g_mapCookies.SetValue(plugin_id, new Cookie(buff, buff, CookieAccess_Private));
+
+	Load_Vip(plugin_id);
 }
 
 public void VIP_OnVIPLoaded()
@@ -54,9 +86,11 @@ public void VIP_OnVIPLoaded()
 		ar.GetString(index, plugin_id, sizeof(plugin_id));
 		Load_Vip(plugin_id);
 	}
+	
+	delete ar;
 }
 
-void Load_Vip(char[] plugin_id)
+void Load_Vip(const char[] plugin_id)
 {
 	if(!plugin_id[0] || VIP_IsValidFeature(plugin_id))
 		return;
@@ -64,17 +98,15 @@ void Load_Vip(char[] plugin_id)
 	VIP_RegisterFeature(plugin_id, STRING, SELECTABLE, CallBack_VIP_OnItemSelected, CallBack_VIP_OnItemDisplayed, .bCookie = false);
 }
 
-public bool CallBack_VIP_OnItemDisplayed(int client, const char[] plugin_id, char[] display, int maxlength)
+public bool CallBack_VIP_OnItemDisplayed(int client, char[] plugin_id, char[] display, int maxlength)
 {   
-    MC_PluginIndex index = MC_GetPluginIndexFromId(plugin_id);
-
-	if(!MC_GetPluginDisplayName(client, index, display, maxlength))
+	if(!MC_GetPluginDisplayName(client, plugin_id, CORE_TYPE, display, maxlength))
         return false;
     
-    if(MC_IsPluginHavePreviewItems(index))
+    if(MC_IsPluginHavePreviewItems(plugin_id))
     {   
         char buffer[MAX_UNIQUE_LENGTH];
-        Format(display, maxlength, "%s%T", display, (MC_GetClientSelectedItem(client, index, VIP, buffer, sizeof(buffer)) ? "ENABLED" : "DISABLED"), client);
+        Format(display, maxlength, "%s%T", display, (MC_GetClientSelectedItem(client, plugin_id, CORE_TYPE, buffer, sizeof(buffer)) ? "ENABLED" : "DISABLED"), client);
     }
 
 	return true;
@@ -82,28 +114,30 @@ public bool CallBack_VIP_OnItemDisplayed(int client, const char[] plugin_id, cha
 
 public bool CallBack_VIP_OnItemSelected(int client, const char[] plugin_id)
 {
-    MC_PluginIndex index = MC_GetPluginIndexFromId(plugin_id);
-
-	if(!MC_IsValidPluginIndex(index))
+	if(!MC_IsValidPluginUnique(plugin_id))
 		return false;
 
-	if(!MC_CallPluginSelected(client, index))
+	if(!MC_CallPluginSelected(client, plugin_id, CORE_TYPE))
 		return true;
 
-	if(MC_IsPluginHavePreviewItems(index))
+	if(MC_IsPluginHavePreviewItems(plugin_id))
 	{
         char buffer[MAX_UNIQUE_LENGTH];
 
-		if(MC_GetClientSelectedItem(client, index, VIP, buffer, sizeof(buffer)))
+		Cookie cookie;
+		g_mapCookies.GetValue(plugin_id, cookie);
+		cookie.Get(client, buffer, sizeof(buffer));
+
+		if(buffer[0])
 		{
-            MC_SetClientSelectedItem(client, index, VIP, "");
+            cookie.Set(client, "");
 		}
 		else
 		{
 			char item_unique[MAX_UNIQUE_LENGTH];
 			VIP_GetClientFeatureString(client, plugin_id, item_unique, sizeof(item_unique));
 
-            MC_SetClientSelectedItem(client, index, VIP, item_unique);
+            cookie.Set(client, item_unique);
 		}
 
 		return true;
@@ -132,18 +166,17 @@ public Menu Menu_Vip_SelectItem(int client, const char[] plugin_id)
 */
 	char buff[256], translate[128], selected_item[MAX_UNIQUE_LENGTH];
 	bool selected;
-    MC_PluginIndex index = MC_GetPluginIndexFromId(plugin_id);
 
-    MC_GetClientSelectedItem(client, index, VIP, selected_item, sizeof(selected_item));
+    MC_GetClientSelectedItem(client, plugin_id, CORE_TYPE, selected_item, sizeof(selected_item));
 
 	Menu menu = new Menu(MenuHandler_Vip_SelectItem);
 	menu.ExitBackButton = true;
 
-    MC_GetPluginDisplayName(client, index, translate, sizeof(translate));
+    MC_GetPluginDisplayName(client, plugin_id, CORE_TYPE, translate, sizeof(translate));
 	Format(translate, sizeof(translate), "%s\n ", translate);
 	menu.SetTitle(translate);
 
-	if(MC_IsPluginHavePreviewItems(index))
+	if(MC_IsPluginHavePreviewItems(plugin_id))
 	{
 		Format(translate, sizeof(translate), "%T%T", "PREVIEW MODE", client, (g_bPreviewMode[client] ? "ENABLED" : "DISABLED"), client);
 		menu.AddItem("p", translate);
@@ -161,14 +194,14 @@ public Menu Menu_Vip_SelectItem(int client, const char[] plugin_id)
 
 	if(strcmp(buff, "all", false) == 0)
 	{
-		ArrayList ar = MC_GetPluginItemsArrayList(index);
+		ArrayList ar = MC_GetPluginItemsArrayList(plugin_id);
 		char item[MAX_UNIQUE_LENGTH];
 
 		for(int num; num < ar.Length; num++)
 		{
 			ar.GetString(num, item, sizeof(item));
 
-			if(g_bPreviewMode[client] && !MC_IsItemHavePreview(index, item))
+			if(g_bPreviewMode[client] && !MC_IsItemHavePreview(plugin_id, item))
 				continue;
 
 			selected = (strcmp(selected_item, item) == 0);
@@ -182,7 +215,7 @@ public Menu Menu_Vip_SelectItem(int client, const char[] plugin_id)
 
 		for(int num; num < count; num++)
 		{
-			if(g_bPreviewMode[client] && !MC_IsItemHavePreview(index, exp[num]))
+			if(g_bPreviewMode[client] && !MC_IsItemHavePreview(plugin_id, exp[num]))
 				continue;
 
 			selected = (strcmp(selected_item, exp[num]) == 0);
@@ -196,7 +229,7 @@ public Menu Menu_Vip_SelectItem(int client, const char[] plugin_id)
 void Fill_MenuByItems(Menu menu, int client, bool selected, const char[] plugin_id, char[] item_unique)
 {
 	char buff[128];
-    MC_GetItemDisplayName(client, MC_GetPluginIndexFromId(plugin_id), item_unique, buff, sizeof(buff));
+    MC_GetItemDisplayName(client, plugin_id, CORE_TYPE, item_unique, buff, sizeof(buff));
 
 	if(!g_bPreviewMode[client] && selected)
 	{
@@ -213,25 +246,31 @@ public int MenuHandler_Vip_SelectItem(Menu menu, MenuAction action, int client, 
 		char item_unique[MAX_UNIQUE_LENGTH];
 		menu.GetItem(item, item_unique, sizeof(item_unique));
 
-        MC_PluginIndex index = MC_GetPluginIndexFromId(g_cLastSeePluginUnique[client]);
-
 		if(item == 0 && item_unique[0] == 'p')
 		{
 			g_bPreviewMode[client] = !g_bPreviewMode[client];
 		}
 		else if(item_unique[0] == 'o' && (item == 0 || item == 1))
 		{
-			if(MC_CallItemSelected(client, index, item_unique))
-                MC_SetClientSelectedItem(client, index, VIP, "");
+			if(MC_CallItemSelected(client, g_cLastSeePluginUnique[client], item_unique, CORE_TYPE))
+			{
+				Cookie cookie;
+				g_mapCookies.GetValue(g_cLastSeePluginUnique[client], cookie);
+                cookie.Set(client, "");
+			}
 		}
 		else if(g_bPreviewMode[client])
 		{
-            MC_CallItemPreview(client, index, item_unique);
+            MC_CallItemPreview(client, g_cLastSeePluginUnique[client], item_unique, CORE_TYPE);
 		}
 		else
 		{ 
-			if(MC_CallItemSelected(client, index, item_unique))
-                MC_SetClientSelectedItem(client, index, VIP, item_unique);
+			if(MC_CallItemSelected(client, g_cLastSeePluginUnique[client], item_unique, CORE_TYPE))
+			{
+				Cookie cookie;
+				g_mapCookies.GetValue(g_cLastSeePluginUnique[client], cookie);
+                cookie.Set(client, item_unique);
+			}
 		}
 
 		Menu_Vip_SelectItem(client, g_cLastSeePluginUnique[client]).DisplayAt(client, menu.Selection, 0);
